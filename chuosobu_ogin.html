@@ -88,30 +88,9 @@
     const yamatabata = stationFigure.get("田端");
 
     // 追加例（お試し）
-    const yotsuya = {
-      id: N, name: "四ツ谷",
-      x: chuoShinjuku.x + (chuoKanda.x - chuoShinjuku.x) / 3,
-      y: chuoShinjuku.y + (chuoKanda.y - chuoShinjuku.y) / 3,
-      angle: null
-    };
-    const ochanomizu = {
-      id: N + 1, name: "御茶ノ水",
-      x: chuoShinjuku.x + (chuoKanda.x - chuoShinjuku.x) * 2 / 3,
-      y: chuoShinjuku.y + (chuoKanda.y - chuoShinjuku.y) * 2 / 3,
-      angle: null
-    };
-
-    stationFigure.set(yotsuya.name, yotsuya);
-    stationFigure.set(ochanomizu.name, ochanomizu);
-    allStations.push(yotsuya, ochanomizu);
 
     const defaultColor = "#808080";
     const activeColor = "#d33";
-    const chuoEdges = [
-      { from: chuoShinjuku.id, to: yotsuya.id, active: false, color: defaultColor, activeColor: activeColor },
-      { from: yotsuya.id, to: ochanomizu.id, active: false, color: defaultColor, activeColor: activeColor },
-      { from: ochanomizu.id, to: chuoKanda.id, active: false, color: defaultColor, activeColor: activeColor }
-    ];
 
     // 新しい駅を追加するためのID
     let newId = allStations.length;
@@ -184,7 +163,7 @@
     const keihinEdges = addStationsAndEdges(keihinStationData);
     const chuosobuEdges = addStationsAndEdges(chuosobuData);
 
-    const allEdges = [...yamanoteEdges, ...chuoEdges, ...keihinEdges,...chuosobuEdges];
+    const allEdges = [...yamanoteEdges, ...keihinEdges,...chuosobuEdges];
     
 
 
