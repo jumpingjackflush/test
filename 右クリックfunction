@@ -1,0 +1,148 @@
+
+//保存/読込/全解除 の直前あたりにコピペ（開始）
+// --- 範囲選択用ロジック ---
+
+    let pendingRangeStartEdge = null; // 1回目の右クリックで選んだ辺
+
+    // グラフ構造（隣接リスト）を作成する関数
+    function buildAdjacencyList() {
+      const adj = new Map();
+      // 全ての駅に対して空のリストを初期化
+      allStations.forEach(s => adj.set(s.id, []));
+      // 辺の情報を詰める
+      allEdges.forEach(edge => {
+        adj.get(edge.from).push({ to: edge.to, edgeObj: edge });
+        adj.get(edge.to).push({ to: edge.from, edgeObj: edge });
+      });
+      return adj;
+    }
+
+    // 幅優先探索(BFS)で2つの辺の間の最短ルートにある辺のリストを返す
+    function findPathBetweenEdges(edgeA, edgeB) {
+      if (edgeA === edgeB) return [edgeA];
+
+      const adj = buildAdjacencyList();
+      
+      // 辺Aの両端(startNodes)から、辺Bの両端(goalNodes)への最短経路を探す
+      // 4パターン(from->from, from->to, to->from, to->to)のうち最短を採用するイメージ
+      const startNodes = [edgeA.from, edgeA.to];
+      const goalNodes = new Set([edgeB.from, edgeB.to]);
+
+      let bestPath = null;
+
+      // 各始点候補から探索
+      for (const startNode of startNodes) {
+        const queue = [{ node: startNode, path: [] }];
+        const visited = new Set([startNode]);
+
+        while (queue.length > 0) {
+          const { node, path } = queue.shift();
+
+          // ゴールのいずれかの駅に到達したら
+          if (goalNodes.has(node)) {
+            // 今回見つかったパスに、始点のエッジと終点のエッジを足したものが答えの候補
+            // (ただし、始点・終点がパスに含まれているかどうかの重複排除が必要だが、
+            //  単純に可視化するだけならSetで重複を消せばOK)
+            const fullPath = [edgeA, ...path, edgeB];
+            
+            // これがこれまでで最短なら採用
+            if (!bestPath || fullPath.length < bestPath.length) {
+              bestPath = fullPath;
+            }
+            // BFSなので最初に見つかったものがこのstartNodeからの一番短いルート。
+            // 他のstartNodeからのルートと比較するためにbreakして次のforへ
+            break; 
+          }
+
+          // 隣接ノードへ
+          const neighbors = adj.get(node) || [];
+          for (const next of neighbors) {
+            if (!visited.has(next.to)) {
+              visited.add(next.to);
+              queue.push({ 
+                node: next.to, 
+                path: [...path, next.edgeObj] 
+              });
+            }
+          }
+        }
+      }
+      return bestPath || [];
+    }
+
+    // 右クリックイベント (contextmenu)
+    canvas.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault(); // ブラウザの右クリックメニューを出さない
+
+      const rect = canvas.getBoundingClientRect();
+      const screenX = ev.clientX - rect.left;
+      const screenY = ev.clientY - rect.top;
+      const world = screenToWorld(screenX, screenY);
+
+      // 一番近い辺を探す（クリック判定と同じロジック）
+      let bestEdge = null;
+      let bestDist = Infinity;
+      allEdges.forEach((e) => {
+        const a = allStations[e.from], b = allStations[e.to];
+        const d = pointToSegmentDistance(world.x, world.y, a.x, a.y, b.x, b.y);
+        if (d < bestDist) {
+          bestDist = d;
+          bestEdge = e;
+        }
+      });
+
+      // 判定距離内であれば処理
+      if (bestEdge && (bestDist * scale) <= 12) {
+        
+        if (pendingRangeStartEdge === null) {
+          // --- 1回目の右クリック ---
+          pendingRangeStartEdge = bestEdge;
+          draw(); // 色を変えるために再描画
+        } else {
+          // --- 2回目の右クリック ---
+          const pathEdges = findPathBetweenEdges(pendingRangeStartEdge, bestEdge);
+          
+          if (pathEdges.length > 0) {
+            // パス上の辺をすべてアクティブ(塗る)にする
+            pathEdges.forEach(e => e.active = true);
+          } else {
+            alert("経路が見つかりませんでした（線が繋がっていない可能性があります）");
+          }
+
+          // 状態リセット
+          pendingRangeStartEdge = null;
+          draw();
+        }
+      } else {
+        // 何もないところを右クリックしたらキャンセル
+        if (pendingRangeStartEdge) {
+          pendingRangeStartEdge = null;
+          draw();
+        }
+      }
+    });
+
+//保存/読込/全解除 の直前あたりにコピペ（終了）
+
+
+//上記のコピペに加えて, draw関数のallEdges.forEachの内部を以下のように変更
+allEdges.forEach(e => {
+        const a = allStations[e.from], b = allStations[e.to];
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineWidth = 10;
+        ctx.lineCap = "round";
+        
+        // --- 変更点ここから ---
+        if (e === pendingRangeStartEdge) {
+          // 範囲選択の始点として選択中の場合、目立つ色（シアンなど）にする
+          ctx.strokeStyle = "#00ffff"; 
+        } else {
+          // 通常の判定
+          ctx.strokeStyle = e.active ? e.activeColor : e.color;
+        }
+        // --- 変更点ここまで ---
+
+        ctx.stroke();
+      });
