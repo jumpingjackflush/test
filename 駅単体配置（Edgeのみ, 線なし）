@@ -1,0 +1,29 @@
+// 【新機能1】 駅を単体で配置する（線は引かない）
+// baseName: 基準にする既存の駅名
+// newName: 新しく作る駅名
+// dx, dy: 基準駅からの相対座標
+function addStationNode(baseName, newName, dx, dy) {
+  const base = stationFigure.get(baseName);
+  if (!base) {
+    console.error(`基準駅 ${baseName} が見つかりません`);
+    return;
+  }
+  
+  // 既に同名の駅がある場合は何もしない（重複防止）
+  if (stationFigure.has(newName)) {
+    console.log(`駅 ${newName} は既に存在します`);
+    return;
+  }
+
+  const newStation = {
+    id: allStations.length, // 末尾に追加
+    name: newName,
+    x: base.x + dx,
+    y: base.y + dy,
+    angle: null
+  };
+
+  allStations.push(newStation);
+  stationFigure.set(newName, newStation);
+  return newStation;
+}
