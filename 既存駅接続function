@@ -1,0 +1,19 @@
+function connectStations(nameA, nameB, color="#808080", activeColor="#d33") {
+  const sA = stationFigure.get(nameA);
+  const sB = stationFigure.get(nameB);
+
+  if (!sA || !sB) {
+    console.error(`駅が見つかりません: ${nameA}, ${nameB}`);
+    return;
+  }
+
+  // 既に接続されているかチェック（多重書き防止）したい場合はここで判定を入れる
+  // 今回は簡易的にそのまま追加
+  allEdges.push({
+    from: sA.id,
+    to: sB.id,
+    active: false,
+    color: color,
+    activeColor: activeColor
+  });
+}
