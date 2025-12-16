@@ -1,0 +1,21 @@
+    const jobanData = [
+      { start:"日暮里", name: "三河島", dx:40, dy: -40},
+      { start:"三河島", name: "南千住", dx:30, dy: -30},
+      { start:"新松戸", name: "馬橋", dx:-60, dy: 0},
+      { start:"馬橋", name: "北松戸", dx:-60, dy: 0},
+      { start:"北松戸", name: "松戸", dx:-60, dy: 0},
+      { start:"松戸", name: "金町", dx:-60, dy: 0},
+      { start:"金町", name: "亀有", dx:-60, dy: 0},
+      { start:"亀有", name: "綾瀬", dx:-60, dy: 0},
+      { start:"綾瀬", name: "北千住", dx:-60, dy: 0},
+
+      { start:"新松戸", name: "北小金", dx:40, dy: -40},
+      { start:"北小金", name: "南柏", dx:40, dy: -40},
+      { start:"南柏", name: "柏", dx:40, dy: -40},
+      { start:"柏", name: "北柏", dx:40, dy: -40},
+      { start:"北柏", name: "我孫子", dx:40, dy: -40},
+      { start:"我孫子", name: "天王台", dx:40, dy: -40},
+      
+    ]
+
+    connectStations("南千住","北千住","#808080","#d33");
