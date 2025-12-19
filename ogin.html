@@ -29,7 +29,40 @@
 
   <canvas id="map" width="1300" height="700"></canvas>
 
-  
+  <input type="file" id="imageInput" accept="image/*" style="display: none;">
+
+  <div id="imagePopup" style="
+    display: none;
+    position: fixed;
+    z-index: 100;
+    pointer-events: none;
+    background: white;
+    border: 1px solid #ccc;
+    padding: 5px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    /* 変更点: 枠のサイズを固定せず、中身（画像）に合わせる */
+    width: fit-content;
+    height: auto;
+  ">
+    <img id="popupImg" src="" style="
+      display: block;      /* 画像下の余白を消す */
+      max-width: 300px;    /* 横幅は最大300pxまで */
+      max-height: 300px;   /* 縦幅も最大300pxまで */
+      width: auto;         /* アスペクト比を維持 */
+      height: auto;        /* アスペクト比を維持 */
+      border-radius: 4px;
+    ">
+    <div id="popupTitle" style="
+      text-align: center; 
+      font-size: 12px; 
+      margin-top: 4px; 
+      font-weight: bold;
+      /* タイトルが長すぎる場合に枠を広げすぎない設定 */
+      max-width: 300px;
+      word-wrap: break-word;
+    "></div>
+  </div>
 
   <script>
     //  山手線駅名（時計回り）
@@ -508,6 +541,47 @@
       return { x: (sx - defaultX) / scale, y: (sy - defaultY) / scale };
     }
 
+    // --- 画像アップロード & 表示機能 ---
+
+    const imageInput = document.getElementById("imageInput");
+    const imagePopup = document.getElementById("imagePopup");
+    const popupImg = document.getElementById("popupImg");
+    const popupTitle = document.getElementById("popupTitle");
+    let targetStationIdForUpload = null; // どの駅に画像をアップしようとしているか
+
+    // ファイルが選択された時の処理
+    imageInput.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file || targetStationIdForUpload === null) return;
+
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        // 画像データをBase64テキストとして駅オブジェクトに保存
+        const station = allStations[targetStationIdForUpload];
+        station.image = evt.target.result;
+        
+        alert(`${station.name}駅に写真を設定しました！`);
+        draw(); // カメラアイコンなどを描画したい場合に備えて再描画
+      };
+      reader.readAsDataURL(file);
+      
+      // 次回のために値をクリア
+      imageInput.value = ""; 
+    });
+
+    // 駅をクリックしたか判定する関数
+    function getStationAt(worldX, worldY) {
+      // 駅の半径（描画時は6pxなので、少し広めに10pxくらいで判定）
+      const hitRadius = 10; 
+      for (const s of allStations) {
+        const dist = Math.hypot(worldX - s.x, worldY - s.y);
+        if (dist <= hitRadius) {
+          return s;
+        }
+      }
+      return null;
+    }
+
     canvas.addEventListener("click", (ev) => {
       if (didDrag) {
         didDrag = false;
@@ -517,6 +591,32 @@
       const screenX = ev.clientX - rect.left;
       const screenY = ev.clientY - rect.top;
       const world = screenToWorld(screenX, screenY);
+
+      // --- 追加機能: Shift + クリック で画像操作 ---
+      if (ev.shiftKey) {
+        const station = getStationAt(world.x, world.y);
+        if (station) {
+          
+          // 【変更点】既に画像がある場合の処理を追加
+          if (station.image) {
+            const shouldDelete = confirm(`「${station.name}」には既に写真があります。\n\n削除しますか？\n(OK=削除 / キャンセル=新しい写真に変更)`);
+            
+            if (shouldDelete) {
+              delete station.image; // 画像データを削除
+              draw(); // 再描画
+              alert("画像を削除しました。");
+              return; // ここで終了（ファイル選択は開かない）
+            }
+          }
+
+          // 画像がない、または「キャンセル（変更）」を選んだ場合はここへ進む
+          targetStationIdForUpload = station.id;
+          imageInput.click(); // ファイル選択ダイアログを開く
+          return; 
+        }
+      }
+      // -------------------------------------------------------
+      
       let bestEdge = null;
       let bestDist = Infinity;
       allEdges.forEach((e) => {
@@ -559,16 +659,36 @@
     });
 
     canvas.addEventListener("mousemove", (ev) => {
-      if (!nowDrag) return;
-      ev.preventDefault();
-      didDrag = true;
-      const dx = ev.clientX - lastX;
-      const dy = ev.clientY - lastY;
-      defaultX += dx;
-      defaultY += dy;
-      lastX = ev.clientX;
-      lastY = ev.clientY;
-      draw();
+      const rect = canvas.getBoundingClientRect();
+      const screenX = ev.clientX - rect.left;
+      const screenY = ev.clientY - rect.top;
+
+      if (nowDrag) {
+        ev.preventDefault();
+        didDrag = true;
+        const dx = ev.clientX - lastX;
+        const dy = ev.clientY - lastY;
+        defaultX += dx;
+        defaultY += dy;
+        lastX = ev.clientX;
+        lastY = ev.clientY;
+        draw();
+        imagePopup.style.display = "none";
+        return; 
+      }
+
+      const world = screenToWorld(screenX, screenY);
+      const hoveredStation = getStationAt(world.x, world.y);
+
+      if (hoveredStation && hoveredStation.image) {
+        imagePopup.style.display = "block";
+        imagePopup.style.left = (ev.clientX + 15) + "px";
+        imagePopup.style.top = (ev.clientY + 15) + "px";
+        popupImg.src = hoveredStation.image;
+        popupTitle.textContent = hoveredStation.name;
+      } else {
+        imagePopup.style.display = "none";
+      }
     });
 
     canvas.addEventListener("mouseup", (ev) => {
@@ -713,26 +833,53 @@
 
     // 保存/読込/全解除
     const STORAGE_KEY = "yamanote_chuo_edges_state_v2"; 
+    // 保存処理の更新版（画像データも含む）
     document.getElementById("saveBtn").onclick = () => {
-      const state = allEdges.map(e => e.active ? 1 : 0);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      alert("保存しました。");
+      const saveData = {
+        edges: allEdges.map(e => e.active ? 1 : 0),
+        images: {} // { 駅名: "base64..." } の形式で保存
+      };
+      
+      allStations.forEach(s => {
+        if (s.image) {
+          saveData.images[s.name] = s.image;
+        }
+      });
+
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(saveData));
+        alert("保存しました。");
+      } catch (e) {
+        alert("容量オーバーのため保存できませんでした（画像が多すぎる可能性があります）。");
+      }
     };
     document.getElementById("loadBtn").onclick = () => {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) { alert("保存データがありません。"); return; }
+      if (!raw) return;
+      
       try {
-        const state = JSON.parse(raw);
-        if (state.length !== allEdges.length) {
-          alert("データ形式が古いため読み込めません。");
-          localStorage.removeItem(STORAGE_KEY);
-          return;
+        const data = JSON.parse(raw);
+        
+        // 旧バージョン(配列のみ)との互換性チェック
+        if (Array.isArray(data)) {
+           // 旧データの読み込み処理...
+        } else {
+           // 新データの読み込み
+           if (data.edges) {
+             data.edges.forEach((state, i) => { if(allEdges[i]) allEdges[i].active = !!state; });
+           }
+           if (data.images) {
+             for (const [name, imgStr] of Object.entries(data.images)) {
+               const s = stationFigure.get(name);
+               if (s) s.image = imgStr;
+             }
+           }
         }
-        allEdges.forEach((e, i) => { e.active = !!state[i]; });
         draw();
         alert("読み込みました。");
-      } catch {
-        alert("保存データの読み込みに失敗しました。");
+      } catch (e) {
+        console.error(e);
+        alert("読み込みに失敗しました。");
       }
     };
     document.getElementById("clearBtn").onclick = () => {
