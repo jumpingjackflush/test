@@ -4,18 +4,45 @@
   <meta charset="UTF-8" />
   <title>山手線・中央線 クリック塗りアプリ (ズーム対応)</title>
   <style>
-    body { font-family: system-ui, sans-serif; display: grid; place-items: center; gap: 10px; margin: 20px; }
-    #toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    #map { 
-      border: 1px solid #bbb;
-      background:#f8f8f8;
-      cursor: pointer;
-      border-radius: 8px; 
-      user-select: none;
+    /* 画面全体を埋める設定 */
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+      overflow: hidden; /* スクロールバーを消す */
+      display: flex;    /* 縦並びのレイアウト */
+      flex-direction: column;
     }
-    .stat { font-size: 14px; color: #333; }
-    button { padding: 6px 12px; border: 1px solid #aaa; border-radius: 6px; background: #fff; }
-    button:hover { background:#f0f0f0; }
+
+    /* ツールバー: 高さ自動、縮まない */
+    #toolbar {
+      padding: 10px;
+      background: #f0f0f0;
+      border-bottom: 1px solid #ccc;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      flex-shrink: 0; 
+      z-index: 10;
+    }
+
+    /* キャンバス: 残りのスペースを全て埋める */
+    #map { 
+      flex-grow: 1;
+      display: block;
+      background: #f8f8f8; 
+      cursor: pointer;
+      user-select: none;
+      width: 100%;  /* 幅いっぱい */
+      height: 100%; /* 高さいっぱい（flex-growで調整される） */
+    }
+
+    .stat { font-size: 14px; color: #333; margin-left: auto; }
+    button { padding: 6px 12px; border: 1px solid #aaa; border-radius: 6px; background: #fff; cursor: pointer; }
+    button:hover { background:#e8e8e8; }
   </style>
 </head>
 <body>
@@ -24,12 +51,15 @@
     <button id="saveBtn">保存</button>
     <button id="loadBtn">読込</button>
     <button id="clearBtn">全解除</button>
-    <button id="resetBtn">視点リセット</button> <span class="stat">塗った区間: <span id="count">0</span> / <span id="total">0</span></span>
+    <button id="resetBtn">視点リセット</button>
+    <span class="stat">塗った区間: <span id="count">0</span> / <span id="total">0</span></span>
+    <button id="bgBtn">背景画像</button> <span class="stat">
+    <button id="bgBtn">背景画像</button>
   </div>
 
-  <canvas id="map" width="1300" height="700"></canvas>
+  <input type="file" id="bgInput" accept="image/*" style="display: none;">
 
-  <input type="file" id="imageInput" accept="image/*" style="display: none;">
+  <canvas id="map"></canvas> <input type="file" id="imageInput" accept="image/*" style="display: none;">
 
   <div id="imagePopup" style="
     display: none;
@@ -93,9 +123,8 @@
     const MAX_SCALE = 10.0;
     
 
-    // xy座標に変換
     function polar(angle, radius) {
-      return { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+      return { x: radius * Math.cos(angle), y: radius * Math.sin(angle) };
     }
 
     // データ構造 
@@ -461,6 +490,17 @@
       ctx.save();
       ctx.clearRect(0,0,W,H);
       ctx.setTransform(scale, 0, 0, scale, defaultX, defaultY);
+
+      // function draw() の中
+      ctx.setTransform(scale, 0, 0, scale, defaultX, defaultY);
+
+      // --- 【追加】ここに入れる ---
+      if (bgImageObj) {
+        const bx = -bgImageObj.width / 2;
+        const by = -bgImageObj.height / 2;
+        ctx.drawImage(bgImageObj, bx, by);
+      }
+      // ------------------------
 
       ctx.beginPath();
       ctx.arc(cx, cy, R, 0, Math.PI*2);
@@ -829,8 +869,30 @@
 
 
 
+    // --- 【追加】背景画像処理 ---
+    const bgBtn = document.getElementById("bgBtn");
+    const bgInput = document.getElementById("bgInput");
+    let bgImageObj = null;
 
-
+    bgBtn.onclick = () => { bgInput.click(); };
+    
+    bgInput.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const img = new Image();
+        img.onload = () => {
+          bgImageObj = img;
+          draw();
+          alert("背景画像を設定しました");
+        };
+        img.src = evt.target.result;
+      };
+      reader.readAsDataURL(file);
+      bgInput.value = ""; 
+    });
+    
     // 保存/読込/全解除
     const STORAGE_KEY = "yamanote_chuo_edges_state_v2"; 
     // 保存処理の更新版（画像データも含む）
@@ -893,8 +955,42 @@
       draw();
     };
 
-    // 初回描画
-    draw();
+    // --- 【修正】リサイズ対応と初期化 ---
+    
+    // 画面サイズに合わせてキャンバスの解像度を調整する関数
+    function resizeCanvas() {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+      // 初回ロード時、中心座標が0なら画面中央にセット
+      if (defaultX === 0 && defaultY === 0) {
+         resetView();
+      }
+      draw();
+    }
+
+    function resetView() {
+      scale = 1.0;
+      // 画面の真ん中を基準点にする
+      defaultX = canvas.width / 2;
+      defaultY = canvas.height / 2;
+      draw();
+    }
+
+    // ウィンドウサイズが変わったら追従させる
+    window.addEventListener("resize", () => {
+      const oldW = canvas.width;
+      const oldH = canvas.height;
+      resizeCanvas();
+      // 中心位置のズレを補正
+      if (oldW && oldH) {
+        defaultX += (canvas.width - oldW) / 2;
+        defaultY += (canvas.height - oldH) / 2;
+      }
+      draw();
+    });
+
+    // 初期化実行
+    resizeCanvas();
   </script>
 </body>
 </html>
