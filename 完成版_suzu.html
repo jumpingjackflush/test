@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>山手線・中央線 クリック塗りアプリ (完全統合版)</title>
+  <style>
+    /* 画面全体を埋める設定 */
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+      overflow: hidden; /* スクロールバーを消す */
+      display: flex;    /* 縦並びのレイアウト */
+      flex-direction: column;
+    }
+
+    /* ツールバー: 高さ自動、縮まない */
+    #toolbar {
+      padding: 10px;
+      background: #f0f0f0;
+      border-bottom: 1px solid #ccc;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      flex-shrink: 0; 
+      z-index: 10;
+    }
+
+    /* キャンバス: 残りのスペースを全て埋める */
+    #map { 
+      flex-grow: 1;
+      display: block;
+      background: #f8f8f8; 
+      cursor: pointer;
+      user-select: none;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* 変更点: auto を消して 10px に変更（右端に飛ばさない） */
+    .stat { font-size: 14px; color: #333; margin-left: 10px; }
+    
+    button { padding: 6px 12px; border: 1px solid #aaa; border-radius: 6px; background: #fff; cursor: pointer; }
+    button:hover { background:#e8e8e8; }
+  </style>
+</head>
+<body>
+  
+  <div id="toolbar">
+    <button id="saveBtn">保存</button>
+    <button id="loadBtn">読込</button>
+    <button id="clearBtn">全解除</button>
+    <button id="resetBtn">視点リセット</button>
+    
+    <button id="bgBtn">背景画像</button>
+
+    <span class="stat">塗った区間: <span id="count">0</span> / <span id="total">0</span></span>
+  </div>
+
+  <input type="file" id="bgInput" accept="image/*" style="display: none;">
+  <input type="file" id="imageInput" accept="image/*" style="display: none;">
+
+  <canvas id="map"></canvas> 
+
+  <div id="imagePopup" style="
+    display: none;
+    position: fixed;
+    z-index: 100;
+    pointer-events: none;
+    background: white;
+    border: 1px solid #ccc;
+    padding: 5px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    width: fit-content;
+    height: auto;
+  ">
+    <img id="popupImg" src="" style="
+      display: block;
+      max-width: 300px;
+      max-height: 300px;
+      width: auto;
+      height: auto;
+      border-radius: 4px;
+    ">
+    <div id="popupTitle" style="
+      text-align: center; 
+      font-size: 12px; 
+      margin-top: 4px; 
+      font-weight: bold;
+      max-width: 300px;
+      word-wrap: break-word;
+    "></div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("map");
+    const ctx = canvas.getContext("2d");
+
+    //  山手線駅名（時計回り）
+    const yamanote = [
+      "田端","西日暮里","日暮里","鶯谷","上野","御徒町","秋葉原","神田","東京","有楽町",
+      "新橋","浜松町","田町","高輪ゲートウェイ","品川","大崎","五反田","目黒",
+      "恵比寿","渋谷","原宿","代々木","新宿","新大久保","高田馬場","目白","池袋","大塚",
+      "巣鴨","駒込"
+    ];
+
+    const R  = 290;
+    const labelR = R + 22;
+    const N = yamanote.length;
+
+    // 視点の状態 
+    let scale = 1.0;
+    let defaultX = 0; // 画面中央のX座標（レスポンシブ用に0初期化）
+    let defaultY = 0; 
+    let nowDrag = false;
+    let didDrag = false; 
+    let lastX = 0, lastY = 0;
+    const MIN_SCALE = 0.3;
+    const MAX_SCALE = 10.0;
+
+    // レスポンシブ対応のため、極座標は原点(0,0)基準で返す
+    function polar(angle, radius) {
+      return { x: radius * Math.cos(angle), y: radius * Math.sin(angle) };
+    }
+
+    // データ構造 
+    const stationFigure = new Map();
+    // 山手線
+    for (let i = 0; i < N; i++) {
+      const theta = (-Math.PI/2) + i * (2*Math.PI/N);
+      const p = polar(theta, R);
+      const station = { id:i, name: yamanote[i], x:p.x, y:p.y, angle: theta };
+      stationFigure.set(station.name, station);
+    }
+    const allStations = Array.from(stationFigure.values());
+
+    const yamanoteEdges = [];
+    for (let i = 0; i < N; i++) {
+      const j = (i+1) % N;
+      yamanoteEdges.push({ 
+        from: i, to: j, active: false, color: "#808080", activeColor: "#d33" 
+      });
+    }
+
+    const chuoShinjuku = stationFigure.get("新宿");
+    const chuoKanda = stationFigure.get("神田");
+    
+    // 定数
+    const defaultColor = "#808080";
+    const activeColor = "#d33";
+    let newId = allStations.length;
+
+    // --- 駅追加・接続用のヘルパー関数 ---
+    function addStationsAndEdges(stationData) {
+      const newEdges = [];
+      for (const stationInfo of stationData) {
+        const startStation = stationFigure.get(stationInfo.start);
+        if (!startStation) {
+          console.error(`始点駅 "${stationInfo.start}" が見つかりません。`);
+          continue; 
+        }
+        const newStation = {
+          id: newId,
+          name: stationInfo.name,
+          x: startStation.x + stationInfo.dx,
+          y: startStation.y + stationInfo.dy,
+          angle: null,
+        };
+        allStations.push(newStation);
+        stationFigure.set(newStation.name, newStation);
+        newEdges.push({
+          from: startStation.id,
+          to: newStation.id,
+          active: false,
+          color: defaultColor,
+          activeColor: activeColor
+        });
+        newId++;
+      }
+      return newEdges;
+    }
+
+    // 既存駅を繋ぐ関数
+    function connectStations(nameA, nameB, color="#808080", activeColor="#d33") {
+      const sA = stationFigure.get(nameA);
+      const sB = stationFigure.get(nameB);
+      if (!sA || !sB) {
+        console.error(`駅が見つかりません: ${nameA}, ${nameB}`);
+        return;
+      }
+      allEdges.push({
+        from: sA.id,
+        to: sB.id,
+        active: false,
+        color: color,
+        activeColor: activeColor
+      });
+    }
+
+    // --- 膨大な駅データ定義 ---
+    const keihinStationData = [
+      { start: "田端", name: "上中里", dx: -30, dy: -30 },
+      { start: "上中里", name: "王子", dx: -30, dy: -30 },
+      { start: "王子", name: "東十条", dx: -30, dy: -30 },
+      { start: "東十条", name: "赤羽", dx: -30, dy: -30 },
+      { start: "赤羽", name: "川口", dx: -30, dy: -30 },
+      { start: "川口", name: "西川口", dx: -30, dy: -30 },
+      { start: "西川口", name: "蕨", dx: -30, dy: -30 },
+      { start: "蕨", name: "南浦和", dx: -30, dy: -30 },
+      { start: "南浦和", name: "浦和", dx: -30, dy: -30 },
+      { start: "浦和", name: "北浦和", dx: -30, dy: -30 },
+      { start: "北浦和", name: "与野", dx: -30, dy: -30 },
+      { start: "与野", name: "さいたま新都心", dx: -30, dy: -30 },
+      { start: "さいたま新都心", name: "大宮", dx: -30, dy: -30 },
+      { start: "品川", name: "大井町", dx: -20, dy: 120 },
+      { start: "大井町", name: "大森", dx: -20, dy: 120 },
+      { start: "大森", name: "蒲田", dx: -20, dy: 140 },
+      { start: "蒲田", name: "川崎", dx: -70, dy: 120 },
+      { start: "川崎", name: "鶴見", dx: -30, dy: 70 },
+      { start: "鶴見", name: "新子安", dx: -70, dy: 20 },
+      { start: "新子安", name: "東神奈川", dx: -60, dy: 20 },
+      { start: "東神奈川", name: "横浜", dx: -60, dy: 40 },
+      { start: "横浜", name: "桜木町", dx: 30, dy: 40 },
+      { start: "桜木町", name: "閣内", dx: 30, dy: 40 },
+      { start: "閣内", name: "石川町", dx: 30, dy: 40 },
+      { start: "石川町", name: "山手", dx: 0, dy: 30 },
+      { start: "山手", name: "根岸", dx: -40, dy: 30 },
+      { start: "根岸", name: "磯子", dx: -80, dy: 20 },
+      { start: "磯子", name: "新杉田", dx: -40, dy: 10 },
+      { start: "新杉田", name: "洋光台", dx: -80, dy: 5 },
+      { start: "洋光台", name: "港南台", dx: -100, dy: 5 },
+      { start: "港南台", name: "本郷台", dx: -60, dy: 0 },
+      { start: "本郷台", name: "大船", dx: -100, dy: 10 },
+    ];
+    const chuosobuData = [
+      { start:"新宿", name: "大久保", dx:-50, dy: 0},
+      { start:"大久保", name: "東中野", dx:-50, dy: 0},
+      { start:"東中野", name: "中野", dx:-50, dy: 0},
+      { start:"中野", name: "高円寺", dx:-50, dy: 0},
+      { start:"高円寺", name: "阿佐ヶ谷", dx:-50, dy: 0},
+      { start:"阿佐ヶ谷", name: "荻窪", dx:-50, dy: 0},
+      { start:"荻窪", name: "西荻窪", dx:-50, dy: 0},
+      { start:"西荻窪", name: "吉祥寺", dx:-50, dy: 0},
+      { start:"吉祥寺", name: "三鷹", dx:-50, dy: 0},
+      { start:"三鷹", name: "武蔵境", dx:-50, dy: 0},
+      { start:"武蔵境", name: "東小金井", dx:-50, dy: 0},
+      { start:"東小金井", name: "武蔵小金井", dx:-50, dy: 0},
+      { start:"武蔵小金井", name: "国分寺", dx:-50, dy: 0},
+      { start:"国分寺", name: "西国分寺", dx:-50, dy: 0},
+      { start:"西国分寺", name: "国立", dx:-50, dy: 0},
+      { start:"国立", name: "立川", dx:-60, dy: 0},
+      { start:"立川", name: "日野", dx:-30, dy: 50},
+      { start:"日野", name: "豊田", dx:-30, dy: 30},
+      { start:"豊田", name: "八王子", dx:-40, dy: 10},
+      { start:"八王子", name: "西八王子", dx:-40, dy: 0},
+      { start:"西八王子", name: "高尾", dx:-60, dy: 20},
+    ];
+    const sobuData = [
+      { start:"代々木", name: "千駄ヶ谷", dx:75, dy: 0},
+      { start:"千駄ヶ谷", name: "信濃町", dx:75, dy: 0},
+      { start:"信濃町", name: "四ツ谷", dx:60, dy: -35},
+      { start:"四ツ谷", name: "市ヶ谷", dx:60, dy: -35},
+      { start:"市ヶ谷", name: "飯田橋", dx:60, dy: -35},
+      { start:"飯田橋", name: "水道橋", dx:70, dy: -25},
+      { start:"水道橋", name: "御茶ノ水", dx:60, dy: -25},
+      { start:"秋葉原", name:"浅草橋", dx:35, dy:0},
+      { start:"浅草橋", name:"両国", dx:35, dy:0},
+      { start:"両国", name:"錦糸町", dx:35, dy:0},
+      { start:"錦糸町", name:"亀戸", dx:35, dy:0},
+      { start:"亀戸", name:"平井", dx:35, dy:-5},
+      { start:"平井", name:"新小岩", dx:40, dy:-5},
+      { start:"新小岩", name:"小岩", dx:40, dy:-5},
+      { start:"小岩", name:"市川", dx:40, dy:40},
+      { start:"市川", name:"本八幡", dx:50, dy:50},
+      { start:"本八幡", name:"下総中山", dx:45, dy:20},
+      { start:"西船橋", name:"船橋", dx:70, dy:5},
+      { start:"船橋", name:"東船橋", dx:50, dy:5},
+      { start:"東船橋", name:"津田沼", dx:35, dy:40},
+      { start:"津田沼", name:"幕張本郷", dx:55, dy:70},
+      { start:"幕張本郷", name:"幕張", dx:15, dy:20},
+    ];
+    const musasinoData = [
+      { start:"西国分寺", name: "新小平", dx:20, dy: -150},
+      { start:"西国分寺", name: "北府中", dx:0, dy: 120},
+      { start:"北府中", name: "府中本町", dx:10, dy: 100},
+      { start:"新小平", name: "新秋津", dx:50, dy: -130},
+      { start:"新秋津", name: "東所沢", dx:70, dy: -80},
+      { start:"東所沢", name: "新座", dx:70, dy: -80},
+      { start:"新座", name: "北朝霞", dx:140, dy:-70},
+      { start:"北朝霞", name: "西浦和", dx:140, dy: -50},
+      { start:"西浦和", name: "武蔵浦和", dx:140, dy: 0},
+      { start:"南浦和", name: "東浦和", dx:100, dy:0},
+      { start:"東浦和", name: "東川口", dx:120, dy:0},
+      { start:"東川口", name: "南越谷", dx:120, dy:0},
+      { start:"南越谷", name: "越谷レイクタウン", dx:120, dy:0},
+      { start:"越谷レイクタウン", name: "吉川", dx:120, dy:0},
+      { start:"吉川", name: "吉川美南", dx:120, dy:0},
+      { start:"吉川美南", name: "新三郷", dx:70, dy:50},
+      { start:"新三郷", name: "南流山", dx:70, dy:50},
+      { start:"南流山", name: "新松戸", dx:70, dy:60},
+      { start:"新松戸", name: "新八柱", dx:20, dy:80},
+      { start:"新八柱", name: "東松戸", dx:20, dy:80},
+      { start:"東松戸", name: "市川大野", dx:20, dy:80},
+      { start:"市川大野", name: "船橋法典", dx:10, dy:80},
+      { start:"船橋法典", name: "西船橋", dx:-10, dy:80},
+      { start:"西船橋", name: "南船橋", dx:35, dy:70},
+      { start:"南船橋", name: "新習志野", dx:35, dy:40},
+      { start:"新習志野", name: "幕張豊砂", dx:35, dy:40},
+      { start:"幕張豊砂", name: "海浜幕張", dx:35, dy:40},
+      { start:"西船橋", name: "市川塩浜", dx:-70, dy:80},
+      { start:"市川塩浜", name: "新浦安", dx:-50, dy:0},
+      { start:"新浦安", name: "舞浜", dx:-50, dy:0},
+      { start:"舞浜", name: "葛西臨海公園", dx:-50, dy:0},
+      { start:"葛西臨海公園", name: "新木場", dx:-60, dy:0},
+      { start:"新木場", name: "潮見", dx:-10, dy:-20},
+      { start:"潮見", name: "越中島", dx:-40, dy:-20},
+      { start:"越中島", name: "八丁堀", dx:-40, dy:-20},
+    ];
+    const saikyoData = [
+      { start:"池袋", name:"板橋", dx:40, dy:-70},
+      { start:"板橋", name:"十条", dx:40, dy:-70},
+      { start:"赤羽", name:"北赤羽", dx:-70, dy:-5},
+      { start:"北赤羽", name:"浮間舟渡", dx:-40, dy:-5},
+      { start:"浮間舟渡", name:"戸田公園", dx:-70, dy:-10},
+      { start:"戸田公園", name:"戸田", dx:-20, dy:-30},
+      { start:"戸田", name:"北戸田", dx:-20, dy:-30},
+      { start:"武蔵浦和", name:"中浦和", dx:-7, dy:-28},
+      { start:"中浦和", name:"南与野", dx:-7, dy:-28},
+      { start:"南与野", name:"与野本町", dx:-7, dy:-28},
+      { start:"与野本町", name:"北与野", dx:-7, dy:-28},
+    ];
+    const jobanData = [
+      { start:"日暮里", name: "三河島", dx:40, dy: -40},
+      { start:"三河島", name: "南千住", dx:30, dy: -30},
+      { start:"新松戸", name: "馬橋", dx:-60, dy: 0},
+      { start:"馬橋", name: "北松戸", dx:-60, dy: 0},
+      { start:"北松戸", name: "松戸", dx:-60, dy: 0},
+      { start:"松戸", name: "金町", dx:-60, dy: 0},
+      { start:"金町", name: "亀有", dx:-60, dy: 0},
+      { start:"亀有", name: "綾瀬", dx:-60, dy: 0},
+      { start:"綾瀬", name: "北千住", dx:-60, dy: 0},
+      { start:"新松戸", name: "北小金", dx:40, dy: -40},
+      { start:"北小金", name: "南柏", dx:40, dy: -40},
+      { start:"南柏", name: "柏", dx:40, dy: -40},
+      { start:"柏", name: "北柏", dx:40, dy: -40},
+      { start:"北柏", name: "我孫子", dx:40, dy: -40},
+      { start:"我孫子", name: "天王台", dx:40, dy: -40},
+    ];
+    const takasakiData = [
+      { start:"大宮", name:"宮原", dx:-60, dy:-80},
+      { start:"宮原", name:"上尾", dx:-50, dy:-60},
+      { start:"上尾", name:"北上尾", dx:-30, dy:-25},
+      { start:"北上尾", name:"桶川", dx:-50, dy:-45},
+      { start:"桶川", name:"北本", dx:-50, dy:-45},
+      { start:"北本", name:"鴻巣", dx:-55, dy:-40},
+      { start:"鴻巣", name:"北鴻巣", dx:-60, dy:-30},
+      { start:"北鴻巣", name:"吹上", dx:-60, dy:-35},
+      { start:"吹上", name:"行田", dx:-70, dy:-35},
+      { start:"行田", name:"熊谷", dx:-60, dy:-50},
+      { start:"熊谷", name:"籠原", dx:-90, dy:-70},
+      { start:"籠原", name:"深谷", dx:-50, dy:-25},
+      { start:"深谷", name:"岡部", dx:-40, dy:-20},
+      { start:"岡部", name:"本庄", dx:-60, dy:-30},
+      { start:"本庄", name:"神保原", dx:-40, dy:-20},
+      { start:"神保原", name:"新町", dx:-40, dy:-20},
+      { start:"新町", name:"倉賀野", dx:-50, dy:-25},
+      { start:"倉賀野", name:"高崎", dx:-20, dy:-40},
+    ];
+    const utunomiyaData = [
+      { start:"大宮", name:"土呂", dx:-5, dy:-50},
+      { start:"土呂", name:"東大宮", dx:0, dy:-35},
+      { start:"東大宮", name:"蓮田", dx:5, dy:-90},
+      { start:"蓮田", name:"白岡", dx:-2, dy:-90},
+      { start:"白岡", name:"新白岡", dx:5, dy:-50},
+      { start:"新白岡", name:"久喜", dx:20, dy:-110},
+      { start:"久喜", name:"東鷲宮", dx:40, dy:-50},
+      { start:"東鷲宮", name:"栗橋", dx:40, dy:-100},
+      { start:"栗橋", name:"古河", dx:30, dy:-80},
+      { start:"古河", name:"野木", dx:40, dy:-60},
+      { start:"野木", name:"間々田", dx:40, dy:-40},
+      { start:"間々田", name:"小山", dx:30, dy:-35},
+      { start:"小山", name:"小金井", dx:50, dy:-60},
+      { start:"小金井", name:"自治医大", dx:20, dy:-30},
+      { start:"自治医大", name:"石橋", dx:5, dy:-60},
+      { start:"石橋", name:"雀宮", dx:30, dy:-50},
+      { start:"雀宮", name:"宇都宮", dx:40, dy:-70},
+    ];
+    const nanbuData = [
+      { start:"立川", name:"西国立", dx:20, dy:40},
+      { start:"西国立", name:"矢川", dx:5, dy:60},
+      { start:"矢川", name:"谷保", dx:20, dy:10},
+      { start:"谷保", name:"西府", dx:10, dy:30},
+      { start:"西府", name:"分倍河原", dx:10, dy:30},
+      { start:"府中本町", name:"南多摩", dx:10, dy:70},
+      { start:"南多摩", name:"稲城長沼", dx:40, dy:20},
+      { start:"稲城長沼", name:"矢野口", dx:50, dy:20},
+      { start:"矢野口", name:"稲田堤", dx:40, dy:30},
+      { start:"稲田堤", name:"中野島", dx:50, dy:20},
+      { start:"中野島", name:"登戸", dx:40, dy:20},
+      { start:"登戸", name:"宿河原", dx:50, dy:10},
+      { start:"宿河原", name:"久地", dx:50, dy:10},
+      { start:"久地", name:"津田山", dx:50, dy:10},
+      { start:"津田山", name:"武蔵溝ノ口", dx:30, dy:30},
+      { start:"武蔵溝ノ口", name:"武蔵新城", dx:80, dy:20},
+      { start:"武蔵新城", name:"武蔵中原", dx:80, dy:20},
+      { start:"武蔵中原", name:"武蔵小杉", dx:80, dy:10},
+      { start:"武蔵小杉", name:"向河原", dx:50, dy:60},
+      { start:"向河原", name:"平間", dx:40, dy:60},
+      { start:"平間", name:"鹿島田", dx:40, dy:50},
+      { start:"鹿島田", name:"矢向", dx:40, dy:40},
+      { start:"矢向", name:"尻手", dx:40, dy:30},
+    ];
+
+    // 駅と頂点を生成
+    const keihinEdges = addStationsAndEdges(keihinStationData);
+    const chuosobuEdges = addStationsAndEdges(chuosobuData);
+    const musasinoEdges = addStationsAndEdges(musasinoData);
+    const sobuEdges = addStationsAndEdges(sobuData);
+    const saikyoEdges = addStationsAndEdges(saikyoData);
+    const jobanEdges = addStationsAndEdges(jobanData);
+    const takasakiEdges = addStationsAndEdges(takasakiData);
+    const utunomiyaEdges = addStationsAndEdges(utunomiyaData);
+    const nanbuEdges = addStationsAndEdges(nanbuData);
+
+    const allEdges = [...yamanoteEdges, ...keihinEdges, ...chuosobuEdges,
+                       ...musasinoEdges,　...sobuEdges,  ...saikyoEdges,
+                       ...takasakiEdges, ...jobanEdges, ...utunomiyaEdges,
+                       ...nanbuEdges];
+    
+    // 追加の接続
+    connectStations("御茶ノ水","神田");
+    connectStations("御茶ノ水","秋葉原");
+    connectStations("武蔵浦和","南浦和");
+    connectStations("八丁堀","東京");
+    connectStations("十条","赤羽");
+    connectStations("北戸田","武蔵浦和");
+    connectStations("北与野","大宮");
+    connectStations("南千住","北千住");
+    connectStations("分倍河原","府中本町");
+    connectStations("尻手","川崎");
+    connectStations("下総中山","西船橋");
+
+
+    // --- 範囲選択用ロジック (BFS) ---
+    let pendingRangeStartEdge = null; 
+
+    function buildAdjacencyList() {
+      const adj = new Map();
+      allStations.forEach(s => adj.set(s.id, []));
+      allEdges.forEach(edge => {
+        adj.get(edge.from).push({ to: edge.to, edgeObj: edge });
+        adj.get(edge.to).push({ to: edge.from, edgeObj: edge });
+      });
+      return adj;
+    }
+
+    function findPathBetweenEdges(edgeA, edgeB) {
+      if (edgeA === edgeB) return [edgeA];
+      const adj = buildAdjacencyList();
+      const startNodes = [edgeA.from, edgeA.to];
+      const goalNodes = new Set([edgeB.from, edgeB.to]);
+      let bestPath = null;
+
+      for (const startNode of startNodes) {
+        const queue = [{ node: startNode, path: [] }];
+        const visited = new Set([startNode]);
+        while (queue.length > 0) {
+          const { node, path } = queue.shift();
+          if (goalNodes.has(node)) {
+            const fullPath = [edgeA, ...path, edgeB];
+            if (!bestPath || fullPath.length < bestPath.length) {
+              bestPath = fullPath;
+            }
+            break; 
+          }
+          const neighbors = adj.get(node) || [];
+          for (const next of neighbors) {
+            if (!visited.has(next.to)) {
+              visited.add(next.to);
+              queue.push({ node: next.to, path: [...path, next.edgeObj] });
+            }
+          }
+        }
+      }
+      return bestPath || [];
+    }
+
+    // --- 描画関数 ---
+    function draw() {
+      ctx.save();
+      ctx.clearRect(0,0, canvas.width, canvas.height);
+      
+      // 変換マトリックス
+      ctx.setTransform(scale, 0, 0, scale, defaultX, defaultY);
+
+      // 1. 背景画像の描画
+      if (bgImageObj) {
+        const bx = -bgImageObj.width / 2;
+        const by = -bgImageObj.height / 2;
+        ctx.drawImage(bgImageObj, bx, by);
+      }
+
+      // 2. 山手線の円
+      ctx.beginPath();
+      ctx.arc(0, 0, R, 0, Math.PI*2);
+      ctx.strokeStyle = "#e0e0e0";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 3. 辺の描画
+      allEdges.forEach(e => {
+        const a = allStations[e.from], b = allStations[e.to];
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineWidth = 10;
+        ctx.lineCap = "round";
+        
+        if (e === pendingRangeStartEdge) {
+          // 範囲選択中はシアン
+          ctx.strokeStyle = "#00ffff"; 
+        } else {
+          ctx.strokeStyle = e.active ? e.activeColor : e.color;
+        }
+        ctx.stroke();
+      });
+
+      // 4. 駅の描画
+      allStations.forEach(s => {
+        ctx.beginPath();
+        // 画像がある場合は黄色
+        ctx.fillStyle = s.image ? "#ffeb3b" : "#fff"; 
+        ctx.strokeStyle = "#333";
+        ctx.lineWidth = 2;
+        ctx.arc(s.x, s.y, 6, 0, Math.PI*2);
+        ctx.fill();
+        ctx.stroke();
+      });
+
+      // 5. 文字の描画
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.fillStyle = "#111";
+      ctx.textBaseline = "middle";
+      
+      allStations.forEach(s => {
+        if (s.angle !== null) {
+          const label = polar(s.angle, labelR);
+          const deg = ((s.angle*180/Math.PI)+360)%360;
+          if (deg > 90 && deg < 270) {
+            ctx.textAlign = "right";
+          } else {
+            ctx.textAlign = "left";
+          }
+          ctx.fillText(s.name, label.x, label.y);
+        } else {
+          ctx.textAlign = "center";
+          ctx.fillText(s.name, s.x, s.y - 15);
+        }
+      });
+
+      document.getElementById("count").textContent = allEdges.filter(e=>e.active).length;
+      document.getElementById("total").textContent = allEdges.length;
+
+      ctx.restore();
+    }
+
+    // 座標変換ヘルパー
+    function screenToWorld(sx, sy) {
+      return { x: (sx - defaultX) / scale, y: (sy - defaultY) / scale };
+    }
+
+    function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+      const vx = x2 - x1, vy = y2 - y1;
+      const wx = px - x1, wy = py - y1;
+      const c1 = vx*wx + vy*wy;
+      if (c1 <= 0) return Math.hypot(px - x1, py - y1);
+      const c2 = vx*vx + vy*vy;
+      if (c2 <= c1) return Math.hypot(px - x2, py - y2);
+      const t = c1 / c2;
+      const projx = x1 + t*vx, projy = y1 + t*vy;
+      return Math.hypot(px - projx, py - projy);
+    }
+
+    function getStationAt(worldX, worldY) {
+      const hitRadius = 10; 
+      for (const s of allStations) {
+        const dist = Math.hypot(worldX - s.x, worldY - s.y);
+        if (dist <= hitRadius) { return s; }
+      }
+      return null;
+    }
+
+    // --- イベントハンドラ ---
+
+    // リサイズ処理
+    function resizeCanvas() {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+      if (defaultX === 0 && defaultY === 0) {
+         resetView();
+      }
+      draw();
+    }
+
+    function resetView() {
+      scale = 1.0;
+      defaultX = canvas.width / 2;
+      defaultY = canvas.height / 2;
+      draw();
+    }
+
+    window.addEventListener("resize", () => {
+      const oldW = canvas.width;
+      const oldH = canvas.height;
+      resizeCanvas();
+      if (oldW && oldH) {
+        defaultX += (canvas.width - oldW) / 2;
+        defaultY += (canvas.height - oldH) / 2;
+      }
+      draw();
+    });
+
+    // 背景画像設定
+    const bgBtn = document.getElementById("bgBtn");
+    const bgInput = document.getElementById("bgInput");
+    let bgImageObj = null;
+
+    bgBtn.onclick = () => { bgInput.click(); };
+    
+    bgInput.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const img = new Image();
+        img.onload = () => {
+          bgImageObj = img;
+          draw();
+          alert("背景画像を設定しました");
+        };
+        img.src = evt.target.result;
+      };
+      reader.readAsDataURL(file);
+      bgInput.value = ""; 
+    });
+
+    // 駅画像設定
+    const imageInput = document.getElementById("imageInput");
+    let targetStationIdForUpload = null; 
+
+    imageInput.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file || targetStationIdForUpload === null) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const station = allStations[targetStationIdForUpload];
+        station.image = evt.target.result;
+        alert(`${station.name}駅に写真を設定しました！`);
+        draw();
+      };
+      reader.readAsDataURL(file);
+      imageInput.value = ""; 
+    });
+
+    // 右クリック (範囲選択)
+    canvas.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const screenX = ev.clientX - rect.left;
+      const screenY = ev.clientY - rect.top;
+      const world = screenToWorld(screenX, screenY);
+
+      let bestEdge = null;
+      let bestDist = Infinity;
+      allEdges.forEach((e) => {
+        const a = allStations[e.from], b = allStations[e.to];
+        const d = pointToSegmentDistance(world.x, world.y, a.x, a.y, b.x, b.y);
+        if (d < bestDist) {
+          bestDist = d;
+          bestEdge = e;
+        }
+      });
+
+      if (bestEdge && (bestDist * scale) <= 12) {
+        if (pendingRangeStartEdge === null) {
+          pendingRangeStartEdge = bestEdge;
+          draw();
+        } else {
+          const pathEdges = findPathBetweenEdges(pendingRangeStartEdge, bestEdge);
+          if (pathEdges.length > 0) {
+            pathEdges.forEach(e => e.active = true);
+          } else {
+            alert("経路が見つかりませんでした");
+          }
+          pendingRangeStartEdge = null;
+          draw();
+        }
+      } else {
+        if (pendingRangeStartEdge) {
+          pendingRangeStartEdge = null;
+          draw();
+        }
+      }
+    });
+
+    // 左クリック (塗る・画像アップ)
+    canvas.addEventListener("click", (ev) => {
+      if (didDrag) { didDrag = false; return; }
+      const rect = canvas.getBoundingClientRect();
+      const screenX = ev.clientX - rect.left;
+      const screenY = ev.clientY - rect.top;
+      const world = screenToWorld(screenX, screenY);
+
+      // Shift + Click で画像操作
+      if (ev.shiftKey) {
+        const station = getStationAt(world.x, world.y);
+        if (station) {
+          if (station.image) {
+            const shouldDelete = confirm(`「${station.name}」には既に写真があります。\n\n削除しますか？\n(OK=削除 / キャンセル=新しい写真に変更)`);
+            if (shouldDelete) {
+              delete station.image; 
+              draw(); 
+              alert("画像を削除しました。");
+              return; 
+            }
+          }
+          targetStationIdForUpload = station.id;
+          imageInput.click(); 
+          return; 
+        }
+      }
+
+      // 通常クリック (線を塗る)
+      let bestEdge = null;
+      let bestDist = Infinity;
+      allEdges.forEach((e) => {
+        const a = allStations[e.from], b = allStations[e.to];
+        const d = pointToSegmentDistance(world.x, world.y, a.x, a.y, b.x, b.y);
+        if (d < bestDist) {
+          bestDist = d;
+          bestEdge = e;
+        }
+      });
+      if (bestEdge && (bestDist * scale) <= 12) {
+        bestEdge.active = !bestEdge.active;
+        draw();
+      }
+    });
+
+    // マウスホイール (ズーム)
+    canvas.addEventListener("wheel", (ev) => {
+      ev.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const screenX = ev.clientX - rect.left;
+      const screenY = ev.clientY - rect.top;
+      const worldBefore = screenToWorld(screenX, screenY);
+
+      const zoomFactor = 1.1;
+      let newScale = (ev.deltaY < 0) ? (scale * zoomFactor) : (scale / zoomFactor);
+      newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
+
+      scale = newScale;
+      defaultX = screenX - worldBefore.x * scale;
+      defaultY = screenY - worldBefore.y * scale;
+      draw();
+    });
+
+    // ドラッグ & ホバー
+    const imagePopup = document.getElementById("imagePopup");
+    const popupImg = document.getElementById("popupImg");
+    const popupTitle = document.getElementById("popupTitle");
+
+    canvas.addEventListener("mousedown", (ev) => {
+      nowDrag = true; didDrag = false;
+      lastX = ev.clientX; lastY = ev.clientY;
+      canvas.style.cursor = 'grabbing';
+    });
+
+    canvas.addEventListener("mousemove", (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const screenX = ev.clientX - rect.left;
+      const screenY = ev.clientY - rect.top;
+
+      if (nowDrag) {
+        ev.preventDefault();
+        didDrag = true;
+        const dx = ev.clientX - lastX;
+        const dy = ev.clientY - lastY;
+        defaultX += dx;
+        defaultY += dy;
+        lastX = ev.clientX;
+        lastY = ev.clientY;
+        draw();
+        imagePopup.style.display = "none";
+        return; 
+      }
+
+      // ホバー処理
+      const world = screenToWorld(screenX, screenY);
+      const hoveredStation = getStationAt(world.x, world.y);
+
+      if (hoveredStation && hoveredStation.image) {
+        imagePopup.style.display = "block";
+        imagePopup.style.left = (ev.clientX + 15) + "px";
+        imagePopup.style.top = (ev.clientY + 15) + "px";
+        popupImg.src = hoveredStation.image;
+        popupTitle.textContent = hoveredStation.name;
+      } else {
+        imagePopup.style.display = "none";
+      }
+    });
+
+    canvas.addEventListener("mouseup", () => { nowDrag = false; canvas.style.cursor = 'pointer'; });
+    canvas.addEventListener("mouseleave", () => { nowDrag = false; canvas.style.cursor = 'pointer'; });
+
+    // 保存/読込
+    const STORAGE_KEY = "yamanote_chuo_edges_state_v2"; 
+    document.getElementById("saveBtn").onclick = () => {
+      const saveData = {
+        edges: allEdges.map(e => e.active ? 1 : 0),
+        images: {} 
+      };
+      allStations.forEach(s => { if (s.image) saveData.images[s.name] = s.image; });
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(saveData));
+        alert("保存しました。");
+      } catch (e) {
+        alert("容量オーバーのため保存できませんでした。");
+      }
+    };
+
+    document.getElementById("loadBtn").onclick = () => {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      try {
+        const data = JSON.parse(raw);
+        // 新データの読み込み
+        if (data.edges) {
+          data.edges.forEach((state, i) => { if(allEdges[i]) allEdges[i].active = !!state; });
+        }
+        if (data.images) {
+          for (const [name, imgStr] of Object.entries(data.images)) {
+            const s = stationFigure.get(name);
+            if (s) s.image = imgStr;
+          }
+        }
+        draw();
+        alert("読み込みました。");
+      } catch (e) {
+        alert("読み込みに失敗しました。");
+      }
+    };
+    
+    document.getElementById("clearBtn").onclick = () => {
+      allEdges.forEach(e => e.active = false);
+      draw();
+    };
+    document.getElementById("resetBtn").onclick = resetView;
+
+    // 初期化実行
+    resizeCanvas();
+    resetView();
+  </script>
+</body>
+</html>
