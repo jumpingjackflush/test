@@ -16,7 +16,7 @@
       flex-direction: column;
     }
 
-    /* ツールバー: 高さ自動、縮まない */
+    /* ツールバー*/
     #toolbar {
       padding: 10px;
       background: #f0f0f0;
@@ -29,7 +29,7 @@
       z-index: 10;
     }
 
-    /* キャンバス: 残りのスペースを全て埋める */
+    /* キャンバス*/
     #map { 
       flex-grow: 1;
       display: block;
@@ -40,7 +40,7 @@
       height: 100%;
     }
 
-    /* 変更点: auto を消して 10px に変更（右端に飛ばさない） */
+    
     .stat { font-size: 14px; color: #333; margin-left: 10px; }
     
     button { padding: 6px 12px; border: 1px solid #aaa; border-radius: 6px; background: #fff; cursor: pointer; }
@@ -114,7 +114,7 @@
 
     // 視点の状態 
     let scale = 1.0;
-    let defaultX = 0; // 画面中央のX座標（レスポンシブ用に0初期化）
+    let defaultX = 0;
     let defaultY = 0; 
     let nowDrag = false;
     let didDrag = false; 
@@ -122,7 +122,7 @@
     const MIN_SCALE = 0.3;
     const MAX_SCALE = 10.0;
 
-    // レスポンシブ対応のため、極座標は原点(0,0)基準で返す
+    // 極座標は原点(0,0)基準で返す
     function polar(angle, radius) {
       return { x: radius * Math.cos(angle), y: radius * Math.sin(angle) };
     }
@@ -154,7 +154,7 @@
     const activeColor = "#d33";
     let newId = allStations.length;
 
-    // --- 駅追加・接続用のヘルパー関数 ---
+    // 駅追加・接続用の関数
     function addStationsAndEdges(stationData) {
       const newEdges = [];
       for (const stationInfo of stationData) {
@@ -201,7 +201,7 @@
       });
     }
 
-    // --- 膨大な駅データ定義 ---
+    // 駅データ定義
     const keihinStationData = [
       { start: "田端", name: "上中里", dx: -30, dy: -30 },
       { start: "上中里", name: "王子", dx: -30, dy: -30 },
@@ -732,29 +732,29 @@
       return bestPath || [];
     }
 
-    // --- 描画関数 ---
+    // 描画関数
     function draw() {
       ctx.save();
       ctx.clearRect(0,0, canvas.width, canvas.height);
       
-      // 変換マトリックス
+      // 変換
       ctx.setTransform(scale, 0, 0, scale, defaultX, defaultY);
 
-      // 1. 背景画像の描画
+      // 背景画像の描画
       if (bgImageObj) {
         const bx = -bgImageObj.width / 2;
         const by = -bgImageObj.height / 2;
         ctx.drawImage(bgImageObj, bx, by);
       }
 
-      // 2. 山手線の円
+      // 山手線
       ctx.beginPath();
       ctx.arc(0, 0, R, 0, Math.PI*2);
       ctx.strokeStyle = "#e0e0e0";
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // 3. 辺の描画
+      // 辺の描画
       allEdges.forEach(e => {
         const a = allStations[e.from], b = allStations[e.to];
         ctx.beginPath();
@@ -772,7 +772,7 @@
         ctx.stroke();
       });
 
-      // 4. 駅の描画
+      // 駅の描画
       allStations.forEach(s => {
         ctx.beginPath();
         // 画像がある場合は黄色
@@ -784,7 +784,7 @@
         ctx.stroke();
       });
 
-      // 5. 文字の描画
+      // 文字の描画
       ctx.font = "12px system-ui, sans-serif";
       ctx.fillStyle = "#111";
       ctx.textBaseline = "middle";
@@ -811,7 +811,7 @@
       ctx.restore();
     }
 
-    // 座標変換ヘルパー
+    // 座標変換
     function screenToWorld(sx, sy) {
       return { x: (sx - defaultX) / scale, y: (sy - defaultY) / scale };
     }
@@ -837,7 +837,7 @@
       return null;
     }
 
-    // --- イベントハンドラ ---
+    // イベントハンドラ
 
     // リサイズ処理
     function resizeCanvas() {
